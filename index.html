@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>⚡ Breakout Scanner</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #060d1a; color: #cbd5e1; font-family: 'Courier New', monospace; }
+  ::-webkit-scrollbar { width: 4px; } ::-webkit-scrollbar-track { background: #060d1a; } ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 4px; }
+  @keyframes dp { 0%,100%{opacity:.3;transform:scale(.7)} 50%{opacity:1;transform:scale(1)} }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+  @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+  @keyframes spin { to{transform:rotate(360deg)} }
+  @keyframes tape { 0%{transform:translateX(0)} 100%{transform:translateX(-50%)} }
+  @keyframes pulse { 0%,100%{box-shadow:0 0 10px #22c55e} 50%{box-shadow:0 0 30px #22c55e,0 0 60px #22c55e40} }
+  @keyframes orangePulse { 0%,100%{box-shadow:0 0 10px #f97316} 50%{box-shadow:0 0 30px #f97316,0 0 60px #f9731640} }
+  .row { animation: fadeIn .3s ease forwards; cursor: pointer; transition: background .15s; }
+  .row:hover { background: #0f1e35 !important; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const PROXY   = "https://massive-proxy.vercel.app/api/proxy";
+const API_KEY = "gTg4DxVLAVK_BiFoCs9Jn7W6lYEsD3vc";
+const WATCHLIST = ["LUNR","IONQ","PLTR","RKLB","QBTS","BBAI","NVDA","AMD","COIN","MARA","ASTS","ACHR","SMCI","MSTR","HOOD","RXRX","SOUN","SERV","OKLO","JOBY"];
+const DEFAULT_SECTORS = ["Space","Quantum","AI","Defense","Nuclear","Biotech"];
+const SECTOR_KW = {
+  Space:   ["space","nasa","orbit","satellite","rocket","lunar","moon","launch","spacecraft","spacex"],
+  Quantum: ["quantum","qubit","quantum computing","quantum chip","q-day"],
+  AI:      ["artificial intelligence","machine learning"," ai ","llm","generative","neural","gpu","openai","nvidia ai"],
+  Defense: ["defense","dod","pentagon","military","army","darpa","missile","contract award","space force","navy","lockheed"],
+  Nuclear: ["nuclear","uranium","reactor","fission","fusion","smr","nrc","doe","plutonium","enrichment"],
+  Biotech: ["fda","clinical trial","drug approval","therapy","oncology","biotech","pharmaceutical","nda","phase 3"],
+};
+// ── ROSS CAMERON'S EXACT CRITERIA (Warrior Trading - $10M verified profits) ──
+// Source: Warrior Trading Stock Selection PDF
+// 1. Relative Volume 5x+ (30-day avg) — MINIMUM, not 2x or 3x
+// 2. Already up 10%+ — must show strength FIRST
+// 3. News catalyst — breaking headline, any kind
+// 4. Price $1–$20 — small account sweet spot, most retail interest
+// 5. Float under 50M — supply/demand imbalance = explosive moves
+// 6. Focus on TOP 2-3 leading gainers — most obvious = best follow-through
+// 7. 2:1 profit to loss minimum on every trade
+function classifyNews(text, sectors){
+  const t=(text||"").toLowerCase();
+  for(const s of sectors){ const kw=SECTOR_KW[s]||[s.toLowerCase()]; if(kw.some(k=>t.includes(k))) return s; }
+  return null;
+}
+// Catalyst strength: A=contract/earnings/FDA, B=upgrade/analyst, C=sector news
+function getCatalystGrade(text){
+  const t=(text||"").toLowerCase();
+  if(/(earnings|revenue|beat|contract award|fda approval|acquisition|merger|ipo|nasa|dod|doe contract|\$[0-9]+[mb])/i.test(t)) return "A";
+  if(/(upgrade|price target|buy rating|initiated|overweight|outperform)/i.test(t)) return "B";
+  if(/(sector|industry|analyst|market)/i.test(t)) return "C";
+  return "D";
+}
+function gradeSetup(item){
+  // Ross Cameron's EXACT 5-point system (Warrior Trading, $10M verified)
+  const checks = {
+    // Criterion 1: Relative Volume 5x+ (Ross's minimum — not 2x or 3x)
+    volRoss:      item.volRatio >= 5,
+    volGood:      item.volRatio >= 3,      // acceptable
+    volWeak:      item.volRatio >= 2,      // below standard
+    // Criterion 2: Already up 10%+ — must show strength first
+    upTen:        item.change >= 10,
+    upFive:       item.change >= 5,        // minimum acceptable
+    upTwenty:     item.change >= 20,       // bonus — very strong
+    // Criterion 3: News catalyst — breaking headline
+    hasNews:      item.freshNewsCount > 0, // fresh news today
+    hasCatalyst:  item.catalystGrade === "A" || item.catalystGrade === "B",
+    catalystA:    item.catalystGrade === "A", // hard news (earnings/contract/FDA)
+    // Criterion 4: Price $1–$20 (Ross's sweet spot for small accounts)
+    priceRoss:    item.price >= 1 && item.price <= 20,
+    priceOk:      item.price >= 1 && item.price <= 50,  // acceptable
+    // Criterion 5: Float — small supply = explosive moves
+    floatBest:    item.float && item.float < 20,   // under 20M = explosive
+    floatRoss:    item.float && item.float < 50,   // Ross's preference
+    floatOk:      item.float && item.float < 100,  // acceptable
+    floatUnknown: !item.float,                      // no data
+    // Bonus: hot sector tailwind
+    hotSector:    !!item.hotSector,
+    breakout:     item.breakout,
+  };
+  // ── SCORING: Ross's weights ──────────────────────────────────────────────
+  let score = 0;
+  // Volume (most important — 30 pts max)
+  if(checks.volRoss)      score += 30;
+  else if(checks.volGood) score += 18;
+  else if(checks.volWeak) score += 8;
+  // Price move (25 pts max)
+  if(checks.upTwenty)     score += 25;
+  else if(checks.upTen)   score += 20;
+  else if(checks.upFive)  score += 10;
+  // Catalyst (20 pts max)
+  if(checks.catalystA)    score += 20;
+  else if(checks.hasCatalyst) score += 12;
+  else if(checks.hasNews) score += 6;
+  // Float (15 pts max)
+  if(checks.floatBest)    score += 15;
+  else if(checks.floatRoss) score += 12;
+  else if(checks.floatOk) score += 6;
+  else if(checks.floatUnknown) score += 3; // unknown = slight penalty
+  // Price range (5 pts)
+  if(checks.priceRoss)    score += 5;
+  else if(checks.priceOk) score += 2;
+  // Bonus points
+  if(checks.hotSector)    score += 3;
+  if(checks.breakout)     score += 2;
+  score = Math.min(99, score);
+  // ── GRADING: Ross's A+ = ALL 5 criteria met ─────────────────────────────
+  let grade, gradeColor, reason;
+  const allFive = checks.volRoss && checks.upTen && checks.hasCatalyst && (checks.floatRoss||checks.floatUnknown) && (checks.priceRoss||checks.priceOk);
+  const fourOfFive = [checks.volRoss, checks.upTen, checks.hasCatalyst, checks.floatRoss||checks.floatOk, checks.priceRoss||checks.priceOk].filter(Boolean).length >= 4;
+  const threeOfFive = [checks.volRoss||checks.volGood, checks.upTen||checks.upFive, checks.hasCatalyst, checks.floatRoss||checks.floatOk, checks.priceRoss||checks.priceOk].filter(Boolean).length >= 3;
+  if(allFive && checks.upTen && checks.volRoss){
+    grade = "A+";
+    gradeColor = "#22c55e";
+    reason = "All 5 Ross Cameron criteria met. Top 2-3 gainer candidate. Trade at proof candle 9:30-9:45am.";
+  } else if(fourOfFive && checks.upFive && checks.volGood){
+    grade = "A";
+    gradeColor = "#86efac";
+    reason = "4 of 5 criteria met. Strong setup — confirm with opening range breakout before entry.";
+  } else if(threeOfFive && checks.upFive){
+    grade = "B";
+    gradeColor = "#facc15";
+    reason = "3 of 5 criteria met. Wait for very clean proof candle. Reduce size 50%.";
+  } else if(checks.upFive || checks.volGood){
+    grade = "C";
+    gradeColor = "#f97316";
+    reason = "Below standard. Paper trade only. Does not meet Ross's minimum criteria.";
+  } else {
+    grade = "D";
+    gradeColor = "#ef4444";
+    reason = "Does not meet criteria. No edge. Stay out.";
+  }
+  // Warning: price already too extended (move already happened like LUNR)
+  if(item.change > 20 && !checks.volRoss){
+    if(grade === "A+") grade = "A";
+    reason = "⚠ Gap >20% without 5x volume — move may have already happened. Risk of fade.";
+    gradeColor = "#86efac";
+  }
+  // Warning: price outside Ross's sweet spot
+  if(!checks.priceOk && grade === "A+"){
+    grade = "A";
+    reason = "Strong setup but price above $50 — outside Ross's preferred $1-$20 range.";
+    gradeColor = "#86efac";
+  }
+  return { score, grade, gradeColor, reason, checks };
+}
+function fmtVol(n){ if(!n) return "—"; if(n>=1e6) return (n/1e6).toFixed(1)+"M"; if(n>=1000) return (n/1000).toFixed(0)+"K"; return String(n); }
+function today(){ return new Date().toISOString().split("T")[0]; }
+function daysAgo(n){ const d=new Date(); d.setDate(d.getDate()-n); return d.toISOString().split("T")[0]; }
+async function mfetch(path, extra={}){
+  const params=new URLSearchParams({path,apiKey:API_KEY,...extra});
+  const r=await fetch(`${PROXY}?${params}`);
+  if(!r.ok){const t=await r.text(); throw new Error(`${r.status}: ${t.slice(0,100)}`);}
+  return r.json();
+}
+// ── Grade Badge ───────────────────────────────────────────────────────────────
+function GradeBadge({ grade, gradeColor, size=14 }){
+  const bg = grade==="A+"?"#22c55e":grade==="A"?"#86efac":grade==="B"?"#facc15":grade==="C"?"#f97316":"#ef4444";
+  return React.createElement('div',{style:{
+    background:bg+"20", border:`1px solid ${bg}60`, borderRadius:8,
+    padding:"3px 10px", fontSize:size, fontWeight:800, color:bg,
+    fontFamily:"monospace", letterSpacing:.5,
+    animation:grade==="A+"?"pulse 2s infinite":"none"
+  }},grade);
+}
+// ── Score Ring ────────────────────────────────────────────────────────────────
+function ScoreRing({ score, grade }){
+  const r=19,circ=2*Math.PI*r,dash=(score/100)*circ;
+  const col=score>=85?"#22c55e":score>=70?"#86efac":score>=55?"#facc15":score>=35?"#f97316":"#ef4444";
+  return React.createElement('svg',{width:50,height:50},
+    React.createElement('circle',{cx:25,cy:25,r,fill:"none",stroke:"#1e293b",strokeWidth:5}),
+    React.createElement('circle',{cx:25,cy:25,r,fill:"none",stroke:col,strokeWidth:5,strokeDasharray:`${dash} ${circ-dash}`,strokeLinecap:"round",transform:"rotate(-90 25 25)"}),
+    React.createElement('text',{x:25,y:25,dominantBaseline:"middle",textAnchor:"middle",fill:col,fontSize:11,fontWeight:700,fontFamily:"monospace"},score)
+  );
+}
+function Check({ ok, label, warn=false }){
+  const col = ok?"#22c55e":warn?"#f97316":"#ef4444";
+  const bg  = ok?"#22c55e15":warn?"#f9731615":"#ef444415";
+  return React.createElement('div',{style:{display:"flex",alignItems:"center",gap:4,padding:"2px 6px",borderRadius:99,background:bg,border:`1px solid ${col}35`}},
+    React.createElement('span',{style:{fontSize:9,color:col}},ok?"✓":warn?"⚠":"✗"),
+    React.createElement('span',{style:{fontSize:9,color:ok?"#86efac":warn?"#fdba74":"#fca5a5"}},label)
+  );
+}
+// ── AI Trade Modal ────────────────────────────────────────────────────────────
+function AIModal({ stock, onClose }){
+  const [msgs,setMsgs]=React.useState([]);
+  const [input,setInput]=React.useState("");
+  const [loading,setLoading]=React.useState(false);
+  const bottomRef=React.useRef(null);
+  const ran=React.useRef(false);
+  React.useEffect(()=>{
+    if(!ran.current){
+      ran.current=true;
+      ask(`This is a ${stock.grade} setup. Give me:
+1. ENTRY — exact price and trigger (proof candle details)
+2. STOP — exact price, why there, max loss on 100 shares
+3. TARGET 1 — first exit, % gain
+4. TARGET 2 — runner target if momentum continues
+5. R:R — risk/reward ratio
+6. TIMING — best time window to trade this (9:30-10am? later?)
+7. RED FLAGS — what would make you abort the trade
+8. VERDICT — trade it or skip it and why`);
+    }
+  },[]);
+  React.useEffect(()=>{ bottomRef.current?.scrollIntoView({behavior:"smooth"}); },[msgs]);
+  async function ask(prompt){
+    if(loading) return;
+    const q=prompt||input.trim(); if(!q) return;
+    if(!prompt) setInput("");
+    setMsgs(m=>[...m,{role:"user",text:q}]);
+    setLoading(true);
+    try{
+      const r=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1200,
+          system:`You are an elite day trading analyst specializing in Gap & Go and Opening Range Breakout strategies.
+SETUP GRADING CRITERIA you use:
+- A+ = Gap 5-15% + Volume 5x+ + Catalyst Grade A (earnings/contract/FDA) + Hot Sector + Float <100M
+- A  = Gap 5-15% + Volume 2-5x + Catalyst Grade A or B — missing one criterion
+- B  = Gap 3-5% or Volume 2x or moderate news — needs extra confirmation
+- C  = Only 1-2 criteria — high reversal risk, skip or watch only
+- D  = Does not meet criteria — do not trade
+KEY RULES:
+1. Gap 5-15% is the sweet spot — under 5% is weak, over 15% means the move already happened
+2. Volume MUST be 5x+ for an A+ — this confirms institutions are buying, not just retail
+3. Catalyst must be HARD news (earnings beat, contract award, FDA approval) — soft news (analyst upgrade) is B grade max
+4. Float under 50M = explosive. 50-100M = manageable. Over 200M = needs massive volume to move
+5. Best entry = proof candle on 5-minute chart at 9:30-9:45am OR opening range breakout
+6. The big move happens in the FIRST 30 MINUTES — if you miss it, wait for a flag pattern, don't chase
+Be specific with exact prices. Use the data provided.`,
+          messages:[...msgs.map(m=>({role:m.role,content:m.text})),
+            {role:"user",content:`TICKER: ${stock.ticker}
+GRADE: ${stock.grade} (Score: ${stock.score}/99)
+PRICE: $${stock.price?.toFixed(2)}
+GAP: ${stock.change>=0?"+":""}${stock.change?.toFixed(1)}% from prev close $${stock.prevClose?.toFixed(2)}
+VOLUME: ${fmtVol(stock.vol)} (${stock.volRatio?.toFixed(1)}x 20-day avg of ${fmtVol(stock.prevVol)})
+FLOAT: ${stock.float?stock.float+"M shares":"unknown"}
+CATALYST: Grade ${stock.catalystGrade} — "${stock.topNews||"no news"}"
+SECTOR: ${stock.hotSector||"no hot sector"}
+BREAKOUT: ${stock.breakout?"Yes — closed above prior high":"No"}
+FRESH NEWS: ${stock.freshNewsCount} headline(s) in last 24h
+REASON: ${stock.reason}
+${q}`}]})
+      });
+      const d=await r.json();
+      setMsgs(m=>[...m,{role:"assistant",text:d.content?.find(b=>b.type==="text")?.text||"No response."}]);
+    }catch(e){ setMsgs(m=>[...m,{role:"assistant",text:`Error: ${e.message}`}]); }
+    setLoading(false);
+  }
+  const quick=["Where's my exact entry?","What's my stop price?","Is the float tradeable?","Best time to enter?","When to take profits?","Would you trade this?"];
+  return React.createElement('div',{style:{position:"fixed",inset:0,background:"#00000095",zIndex:100,display:"flex",alignItems:"center",justifyContent:"center",padding:16},onClick:e=>e.target===e.currentTarget&&onClose()},
+    React.createElement('div',{style:{background:"#0b1120",border:`1px solid ${stock.gradeColor}40`,borderRadius:20,width:"100%",maxWidth:700,maxHeight:"93vh",display:"flex",flexDirection:"column",overflow:"hidden",boxShadow:`0 0 40px ${stock.gradeColor}20`}},
+      // Header
+      React.createElement('div',{style:{padding:"14px 20px",borderBottom:"1px solid #1e293b",display:"flex",alignItems:"center",gap:12,background:`${stock.gradeColor}08`}},
+        React.createElement('div',{style:{flex:1}},
+          React.createElement('div',{style:{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}},
+            React.createElement('span',{style:{fontSize:22,fontWeight:800,color:"#f8fafc",fontFamily:"monospace"}}),stock.ticker&&React.createElement('span',{style:{fontSize:22,fontWeight:800,color:"#f8fafc"}},stock.ticker),
+            React.createElement(GradeBadge,{grade:stock.grade,gradeColor:stock.gradeColor,size:16}),
+            React.createElement('span',{style:{fontSize:13,color:stock.change>=0?"#22c55e":"#ef4444",fontWeight:700}},`${stock.change>=0?"+":""}${stock.change?.toFixed(1)}%`),
+            stock.hotSector&&React.createElement('span',{style:{fontSize:10,background:"#facc1520",border:"1px solid #facc1440",borderRadius:6,padding:"2px 8px",color:"#facc15"}},stock.hotSector),
+            React.createElement('span',{style:{fontSize:10,background:"#1e293b",borderRadius:6,padding:"2px 8px",color:"#64748b"}}),`${stock.volRatio?.toFixed(1)}x VOL`
+          ),
+          React.createElement('div',{style:{fontSize:11,color:stock.gradeColor,marginTop:4,fontStyle:"italic"}}),stock.reason
+        ),
+        React.createElement(ScoreRing,{score:stock.score,grade:stock.grade}),
+        React.createElement('button',{onClick:onClose,style:{background:"#1e293b",border:"none",color:"#64748b",width:32,height:32,borderRadius:8,cursor:"pointer",fontSize:15}},"✕")
+      ),
+      // Chat
+      React.createElement('div',{style:{flex:1,overflowY:"auto",padding:"14px 18px",display:"flex",flexDirection:"column",gap:10}},
+        msgs.length===0&&loading&&React.createElement('div',{style:{textAlign:"center",padding:"30px",color:"#334155",fontSize:11}},`Running A+ analysis on ${stock.ticker}…`),
+        msgs.map((m,i)=>React.createElement('div',{key:i,style:{display:"flex",justifyContent:m.role==="user"?"flex-end":"flex-start"}},
+          React.createElement('div',{style:{maxWidth:"90%",padding:"10px 14px",borderRadius:m.role==="user"?"14px 14px 4px 14px":"14px 14px 14px 4px",background:m.role==="user"?"#1d4ed8":"#111827",border:m.role==="assistant"?"1px solid #1e293b":"none",color:"#cbd5e1",fontSize:12,lineHeight:1.7,whiteSpace:"pre-wrap"}},m.text)
+        )),
+        loading&&React.createElement('div',{style:{display:"flex",gap:5,padding:8}},[0,1,2].map(i=>React.createElement('div',{key:i,style:{width:7,height:7,borderRadius:"50%",background:"#00e5ff",animation:`dp 1s ${i*.2}s infinite`}}))),
+        React.createElement('div',{ref:bottomRef})
+      ),
+      // Quick prompts
+      React.createElement('div',{style:{padding:"8px 14px",display:"flex",gap:5,flexWrap:"wrap",borderTop:"1px solid #1e293b10"}},
+        quick.map(q=>React.createElement('button',{key:q,onClick:()=>ask(q),disabled:loading,style:{background:"#1e293b",border:"1px solid #334155",borderRadius:7,padding:"4px 10px",color:"#64748b",fontSize:10,cursor:"pointer"}},q))
+      ),
+      // Input
+      React.createElement('div',{style:{padding:"10px 14px",borderTop:"1px solid #1e293b",display:"flex",gap:8}},
+        React.createElement('input',{value:input,onChange:e=>setInput(e.target.value),onKeyDown:e=>e.key==="Enter"&&ask(),placeholder:"Ask anything…",style:{flex:1,background:"#111827",border:"1px solid #1e293b",borderRadius:10,padding:"9px 14px",color:"#e2e8f0",fontSize:12,outline:"none"}}),
+        React.createElement('button',{onClick:()=>ask(),disabled:loading||!input.trim(),style:{background:"#1d4ed8",border:"none",borderRadius:10,padding:"9px 16px",color:"#fff",cursor:"pointer",fontSize:12,fontWeight:700}},"ASK")
+      )
+    )
+  );
+}
+// ── Main App ──────────────────────────────────────────────────────────────────
+function App(){
+  const [tab,setTab]             = React.useState("scanner");
+  const [sectors,setSectors]     = React.useState(DEFAULT_SECTORS);
+  const [newSector,setNewSector] = React.useState("");
+  const [gradeFilter,setGradeFilter] = React.useState("ALL"); // ALL, A+, A, B
+  const [results,setResults]     = React.useState([]);
+  const [loading,setLoading]     = React.useState(false);
+  const [error,setError]         = React.useState("");
+  const [spinning,setSpinning]   = React.useState(false);
+  const [scanLog,setScanLog]     = React.useState([]);
+  const [movers,setMovers]       = React.useState([]);
+  const [lastRefresh,setLastRefresh] = React.useState(null);
+  const [selected,setSelected]   = React.useState(null);
+  const [marketOpen,setMarketOpen] = React.useState(false);
+  const scan = React.useCallback(async()=>{
+    setLoading(true); setSpinning(true); setError(""); setScanLog([]);
+    const log=msg=>setScanLog(l=>[...l,msg]);
+    try{
+      log("Checking market status…");
+      const status = await mfetch("/v1/marketstatus/now");
+      setMarketOpen(status?.market==="open");
+      log(`Fetching data for ${WATCHLIST.length} tickers…`);
+      const prevResults = await Promise.allSettled(
+        WATCHLIST.map(tk=>mfetch(`/v2/aggs/ticker/${tk}/prev`).then(d=>({tk,data:d?.results?.[0]})))
+      );
+      const prevMap={};
+      prevResults.forEach(r=>{ if(r.status==="fulfilled"&&r.value?.data) prevMap[r.value.tk]=r.value.data; });
+      log("Fetching news catalysts…");
+      const newsResults = await Promise.allSettled(
+        WATCHLIST.map(tk=>mfetch("/v2/reference/news",{ticker:tk,limit:5,order:"desc"}).then(d=>({tk,items:d.results||[]})))
+      );
+      const newsMap={};
+      newsResults.forEach(r=>{ if(r.status==="fulfilled"&&r.value) newsMap[r.value.tk]=r.value.items; });
+      log("Calculating 20-day average volume…");
+      const cutoff24h = Date.now()-24*60*60*1000;
+      // Get avg vol for all tickers
+      const volResults = await Promise.allSettled(
+        WATCHLIST.map(tk=>
+          mfetch(`/v2/aggs/ticker/${tk}/range/1/day/${daysAgo(30)}/${today()}`,{adjusted:"true",sort:"desc",limit:22})
+            .then(d=>{ const bars=d?.results||[]; const avg=bars.length>1?bars.slice(1).reduce((s,b)=>s+b.v,0)/(bars.length-1):0; return {tk,avg}; })
+        )
+      );
+      const avgVolMap={};
+      volResults.forEach(r=>{ if(r.status==="fulfilled"&&r.value?.avg>0) avgVolMap[r.value.tk]=r.value.avg; });
+      log("Grading setups with A+ criteria…");
+      const enriched = WATCHLIST.map(tk=>{
+        const prev=prevMap[tk]; if(!prev) return null;
+        const price=prev.c||0, open=prev.o||price, high=prev.h||price, low=prev.l||price, vol=prev.v||0;
+        const prevClose=open; // use open as prevClose proxy for gap calculation
+        const avgVol=avgVolMap[tk]||vol*0.5||1;
+        const volRatio=vol/avgVol;
+        const change=open>0?((price-open)/open*100):0;
+        const breakout=price>=high*0.97&&price>open;
+        const items=newsMap[tk]||[];
+        const freshItems=items.filter(n=>new Date(n.published_utc).getTime()>cutoff24h);
+        const allText=items.map(n=>n.title||"").join(" ");
+        const freshText=freshItems.map(n=>n.title||"").join(" ");
+        const hotSector=classifyNews(freshText||allText,sectors);
+        const topNews=freshItems[0]?.title||items[0]?.title||"";
+        const catalystGrade=getCatalystGrade(freshText||topNews);
+        const freshNewsCount=freshItems.length;
+        // Build chart bars
+        const spread=high-low||price*0.02;
+        const bars=[
+          {o:open,           h:open+spread*.25, l:open-spread*.1,  c:open+spread*.2},
+          {o:open+spread*.2, h:open+spread*.5,  l:open,            c:open+spread*.45},
+          {o:open+spread*.45,h:high,            l:open+spread*.3,  c:open+spread*.65},
+          {o:open+spread*.65,h:high,            l:open+spread*.5,  c:price-spread*.05},
+          {o:price-spread*.05,h:price+spread*.05,l:price-spread*.1,c:price},
+        ];
+        const item={
+          ticker:tk, price, open, high, low, change, vol, prevVol:avgVol,
+          volRatio, prevClose:open, float:null, breakout,
+          hotSector, topNews, catalystGrade, freshNewsCount, bars
+        };
+        const graded=gradeSetup(item);
+        return {...item,...graded};
+      }).filter(Boolean).filter(s=>s.price>0);
+      // Sort: A+ first, then by score
+      const gradeOrder={"A+":0,"A":1,"B":2,"C":3,"D":4};
+      enriched.sort((a,b)=>gradeOrder[a.grade]-gradeOrder[b.grade]||b.score-a.score);
+      const aPlus=enriched.filter(s=>s.grade==="A+");
+      const aGrade=enriched.filter(s=>s.grade==="A");
+      log(`✓ Done — ${aPlus.length} A+ setups, ${aGrade.length} A setups found`);
+      setMovers(enriched.filter(s=>s.change>0).slice(0,6).map(s=>({ticker:s.ticker,change:s.change,price:s.price,grade:s.grade,gradeColor:s.gradeColor})));
+      setResults(enriched);
+      setLastRefresh(new Date());
+    }catch(e){
+      setError(e.message?.slice(0,160)||"Scan failed");
+    }
+    setLoading(false); setTimeout(()=>setSpinning(false),500);
+  },[sectors]);
+  React.useEffect(()=>{ scan(); },[]);
+  React.useEffect(()=>{ const t=setInterval(scan,300000); return()=>clearInterval(t); },[scan]);
+  const filtered=results.filter(s=>{
+    if(gradeFilter==="ALL") return true;
+    if(gradeFilter==="A+") return s.grade==="A+";
+    if(gradeFilter==="A") return s.grade==="A+"||s.grade==="A";
+    if(gradeFilter==="B") return s.grade==="A+"||s.grade==="A"||s.grade==="B";
+    return true;
+  });
+  const topSetup=results.find(s=>s.grade==="A+");
+  const now=new Date(),h=now.getHours(),m=now.getMinutes(),d=now.getDay();
+  const isPremarket=(h>=4&&h<9)||(h===9&&m<30);
+  const isWeekend=d===0||d===6;
+  return React.createElement('div',{style:{minHeight:"100vh",background:"#060d1a"}},
+    // Ticker tape with grade badges
+    movers.length>0&&React.createElement('div',{style:{background:"#070f1f",borderBottom:"1px solid #1e293b",overflow:"hidden",height:28,display:"flex",alignItems:"center"}},
+      React.createElement('div',{style:{whiteSpace:"nowrap",animation:"tape 35s linear infinite",display:"flex",alignItems:"center"}},
+        [...movers,...movers].map((m,i)=>React.createElement('span',{key:i,style:{fontSize:10,color:"#334155",padding:"0 16px",borderRight:"1px solid #1e293b20",display:"inline-flex",alignItems:"center",gap:6}},
+          React.createElement('span',{style:{color:"#e2e8f0",fontWeight:700}},m.ticker),
+          React.createElement('span',{style:{fontSize:9,color:m.gradeColor,fontWeight:800}},m.grade),
+          React.createElement('span',{style:{color:m.change>=0?"#22c55e":"#ef4444"}},`${m.change>=0?"+":""}${m.change?.toFixed(1)}%`),
+          React.createElement('span',{style:{color:"#475569"}},`$${m.price?.toFixed(2)}`)
+        ))
+      )
+    ),
+    // Header
+    React.createElement('div',{style:{background:"#060d1aee",backdropFilter:"blur(12px)",borderBottom:"1px solid #1e293b",padding:"10px 18px",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}},
+      React.createElement('div',{style:{display:"flex",alignItems:"center",gap:10}},
+        React.createElement('div',{style:{width:36,height:36,borderRadius:10,background:"linear-gradient(135deg,#0f3460,#00e5ff25)",border:"1px solid #00e5ff35",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}},"⚡"),
+        React.createElement('div',null,
+          React.createElement('div',{style:{fontSize:18,fontWeight:800,letterSpacing:2,color:"#f8fafc"}},"BREAKOUT SCANNER"),
+          React.createElement('div',{style:{fontSize:9,color:"#334155",letterSpacing:2}},"A+ SETUPS ONLY · GAP & GO · FREE")
+        )
+      ),
+      React.createElement('div',{style:{display:"flex",alignItems:"center",gap:6}},
+        React.createElement('div',{style:{width:7,height:7,borderRadius:"50%",background:isWeekend?"#475569":marketOpen?"#22c55e":isPremarket?"#f97316":"#475569",animation:marketOpen||isPremarket?"blink 2s infinite":"none"}}),
+        React.createElement('span',{style:{fontSize:10,color:isWeekend?"#475569":marketOpen?"#22c55e":isPremarket?"#f97316":"#64748b"}},isWeekend?"WEEKEND":marketOpen?"MARKET OPEN":isPremarket?"PRE-MARKET":"MARKET CLOSED")
+      ),
+      lastRefresh&&React.createElement('span',{style:{fontSize:9,color:"#334155"}},`Updated ${lastRefresh.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",second:"2-digit"})}`),
+      React.createElement('div',{style:{marginLeft:"auto",display:"flex",gap:8,alignItems:"center"}},
+        error&&React.createElement('span',{style:{fontSize:10,color:"#ef4444",maxWidth:240},title:error},`⚠ ${error}`),
+        React.createElement('button',{onClick:scan,disabled:loading,style:{background:"#1e293b",border:"1px solid #334155",borderRadius:8,padding:"6px 14px",color:"#64748b",cursor:loading?"not-allowed":"pointer",fontSize:10,display:"flex",alignItems:"center",gap:6}},
+          React.createElement('span',{style:{display:"inline-block",animation:spinning?"spin .5s linear":"none"}},"↻"),
+          loading?"SCANNING…":"REFRESH"
+        )
+      )
+    ),
+    React.createElement('div',{style:{maxWidth:1140,margin:"0 auto",padding:"18px 16px",display:"flex",flexDirection:"column",gap:16}},
+      // A+ Alert
+      !loading&&topSetup&&React.createElement('div',{onClick:()=>setSelected(topSetup),style:{background:"linear-gradient(135deg,#052e16,#0a2010)",border:"1px solid #22c55e60",borderRadius:16,padding:"16px 20px",cursor:"pointer",display:"flex",alignItems:"center",gap:16,animation:"pulse 3s infinite"}},
+        React.createElement('div',{style:{width:52,height:52,borderRadius:14,background:"#22c55e20",border:"1px solid #22c55e50",display:"flex",alignItems:"center",justifyContent:"center",fontSize:26}},"🎯"),
+        React.createElement('div',{style:{flex:1}},
+          React.createElement('div',{style:{display:"flex",alignItems:"center",gap:10,marginBottom:4}},
+            React.createElement('span',{style:{fontSize:11,color:"#4ade80",letterSpacing:2,fontWeight:700}},"A+ SETUP DETECTED"),
+            React.createElement(GradeBadge,{grade:"A+",gradeColor:"#22c55e",size:13})
+          ),
+          React.createElement('div',{style:{fontSize:13,color:"#86efac"}},
+            React.createElement('strong',{style:{color:"#fff",fontSize:16}},topSetup.ticker),
+            ` +${topSetup.change?.toFixed(1)}% · ${topSetup.volRatio?.toFixed(1)}x vol · ${topSetup.hotSector||"setup"} · `,
+            React.createElement('span',{style:{color:"#fde68a"}},topSetup.topNews?.slice(0,60),"…")
+          ),
+          React.createElement('div',{style:{fontSize:10,color:"#22c55e",marginTop:4,fontStyle:"italic"}},topSetup.reason)
+        ),
+        React.createElement(ScoreRing,{score:topSetup.score}),
+        React.createElement('div',{style:{fontSize:12,color:"#22c55e",border:"1px solid #22c55e40",borderRadius:10,padding:"6px 14px",whiteSpace:"nowrap",fontWeight:700}},"GET TRADE PLAN →")
+      ),
+      // Grade filter + sector filter
+      React.createElement('div',{style:{background:"#0b1120",border:"1px solid #1e293b",borderRadius:14,padding:"14px 18px",display:"flex",flexDirection:"column",gap:12}},
+        // Grade filter
+        React.createElement('div',null,
+          React.createElement('div',{style:{fontSize:9,color:"#475569",letterSpacing:2,marginBottom:8}},"FILTER BY SETUP GRADE"),
+          React.createElement('div',{style:{display:"flex",gap:8,flexWrap:"wrap"}},
+            [
+              ["ALL","ALL GRADES","#64748b"],
+              ["A+","A+ ONLY","#22c55e"],
+              ["A","A & ABOVE","#86efac"],
+              ["B","B & ABOVE","#facc15"],
+            ].map(([val,label,col])=>{
+              const count=val==="ALL"?results.length:val==="A+"?results.filter(s=>s.grade==="A+").length:val==="A"?results.filter(s=>s.grade==="A+"||s.grade==="A").length:results.filter(s=>["A+","A","B"].includes(s.grade)).length;
+              return React.createElement('button',{key:val,onClick:()=>setGradeFilter(val),style:{
+                background:gradeFilter===val?col+"25":"#1e293b",
+                border:`2px solid ${gradeFilter===val?col:"#334155"}`,
+                borderRadius:10,padding:"6px 16px",color:gradeFilter===val?col:"#64748b",
+                fontSize:10,cursor:"pointer",fontWeight:gradeFilter===val?700:400,
+                display:"flex",alignItems:"center",gap:6
+              }},
+                label,
+                React.createElement('span',{style:{background:col+"30",borderRadius:99,padding:"1px 7px",fontSize:9}},count)
+              );
+            })
+          )
+        ),
+        // Sectors
+        React.createElement('div',null,
+          React.createElement('div',{style:{fontSize:9,color:"#475569",letterSpacing:2,marginBottom:8}},"HOT SECTORS"),
+          React.createElement('div',{style:{display:"flex",gap:7,flexWrap:"wrap",alignItems:"center"}},
+            sectors.map(s=>{
+              const count=results.filter(r=>r.hotSector===s).length;
+              return React.createElement('div',{key:s,style:{display:"flex",alignItems:"center",background:"#1e293b",border:"1px solid #334155",borderRadius:8,overflow:"hidden"}},
+                React.createElement('span',{style:{padding:"5px 11px",color:"#64748b",fontSize:10}},s,count>0&&React.createElement('span',{style:{color:"#22c55e",marginLeft:4}},count)),
+                React.createElement('button',{onClick:()=>setSectors(ss=>ss.filter(x=>x!==s)),style:{background:"none",border:"none",borderLeft:"1px solid #334155",color:"#334155",padding:"5px 8px",cursor:"pointer",fontSize:9}},"✕")
+              );
+            }),
+            React.createElement('input',{value:newSector,onChange:e=>setNewSector(e.target.value),onKeyDown:e=>{if(e.key==="Enter"&&newSector.trim()){setSectors(s=>[...s,newSector.trim()]);setNewSector("");}},placeholder:"+ Add",style:{background:"#1e293b",border:"1px solid #334155",borderRadius:8,padding:"5px 10px",color:"#94a3b8",fontSize:10,outline:"none",width:80}})
+          )
+        )
+      ),
+      // Scan log
+      loading&&React.createElement('div',{style:{background:"#0b1120",border:"1px solid #1e293b",borderRadius:12,padding:"14px 18px"}},
+        React.createElement('div',{style:{fontSize:9,color:"#475569",letterSpacing:2,marginBottom:8}},"GRADING SETUPS WITH A+ CRITERIA…"),
+        scanLog.length===0&&React.createElement('div',{style:{display:"flex",gap:6}},[0,1,2,3,4].map(i=>React.createElement('div',{key:i,style:{width:8,height:8,borderRadius:"50%",background:"#22c55e",animation:`dp 1s ${i*.15}s infinite`}}))),
+        scanLog.map((l,i)=>React.createElement('div',{key:i,style:{fontSize:11,color:i===scanLog.length-1?"#22c55e":"#334155",padding:"2px 0",display:"flex",alignItems:"center",gap:8}},
+          i===scanLog.length-1&&React.createElement('span',{style:{animation:"dp 1s infinite",display:"inline-block"}},"▶"),l
+        ))
+      ),
+      // Results table
+      React.createElement('div',{style:{background:"#0b1120",border:"1px solid #1e293b",borderRadius:14,overflow:"hidden"}},
+        // Column headers
+        React.createElement('div',{style:{display:"grid",gridTemplateColumns:"52px 60px 55px 65px 75px 85px 1fr 200px 50px",padding:"8px 16px",borderBottom:"1px solid #1e293b",fontSize:8,color:"#334155",letterSpacing:2}},
+          ["GRADE","TICKER","CHG%","VOL×","CATALYST","SECTOR","NEWS HEADLINE","CHECKLIST","SCORE"].map(h=>React.createElement('span',{key:h},h))
+        ),
+        loading&&results.length===0&&React.createElement('div',{style:{padding:"50px",textAlign:"center"}},
+          React.createElement('div',{style:{display:"flex",justifyContent:"center",gap:6,marginBottom:12}},[0,1,2,3,4].map(i=>React.createElement('div',{key:i,style:{width:8,height:8,borderRadius:"50%",background:"#22c55e",animation:`dp 1s ${i*.15}s infinite`}}))),
+          React.createElement('div',{style:{fontSize:11,color:"#334155",letterSpacing:2}},"GRADING SETUPS…")
+        ),
+        !loading&&filtered.length===0&&results.length>0&&React.createElement('div',{style:{padding:"30px",textAlign:"center",color:"#334155",fontSize:11}},"No setups match selected grade filter"),
+        !loading&&results.length===0&&React.createElement('div',{style:{padding:"40px",textAlign:"center"}},React.createElement('button',{onClick:scan,style:{background:"#1d4ed8",border:"none",borderRadius:8,padding:"8px 20px",color:"#fff",cursor:"pointer",fontSize:11}},"SCAN NOW")),
+        filtered.map((s,i)=>React.createElement('div',{key:s.ticker,className:"row",onClick:()=>setSelected(s),style:{
+          display:"grid",gridTemplateColumns:"52px 60px 55px 65px 75px 85px 1fr 200px 50px",
+          padding:"10px 16px",borderBottom:"1px solid #1e293b10",alignItems:"center",
+          animationDelay:`${i*.04}s`,
+          background:s.grade==="A+"?"#052e1610":s.grade==="A"?"#0a2e1008":"transparent",
+          borderLeft:s.grade==="A+"?`3px solid ${s.gradeColor}`:s.grade==="A"?`3px solid ${s.gradeColor}60`:"3px solid transparent"
+        }},
+          // Grade badge
+          React.createElement('div',null,React.createElement(GradeBadge,{grade:s.grade,gradeColor:s.gradeColor,size:11})),
+          // Ticker
+          React.createElement('div',null,
+            React.createElement('div',{style:{fontSize:15,fontWeight:800,color:s.gradeColor}}),s.ticker&&React.createElement('div',{style:{fontWeight:800,color:s.gradeColor,fontSize:15}},s.ticker),
+            React.createElement('div',{style:{fontSize:8,color:"#475569"}},`$${s.price?.toFixed(2)}`)
+          ),
+          // Change
+          React.createElement('div',{style:{fontSize:13,fontWeight:700,color:s.change>=10?"#22c55e":s.change>=5?"#86efac":s.change>=2?"#94a3b8":"#64748b"}},
+            `${s.change>=0?"+":""}${s.change?.toFixed(1)}%`
+          ),
+          // Vol ratio
+          React.createElement('div',null,
+            React.createElement('div',{style:{fontSize:12,fontWeight:700,color:s.volRatio>=5?"#22c55e":s.volRatio>=2?"#facc15":"#94a3b8"}},`${s.volRatio?.toFixed(1)}x`),
+            React.createElement('div',{style:{marginTop:2,background:"#1e293b",borderRadius:99,height:3,width:50}},
+              React.createElement('div',{style:{width:`${Math.min(100,(s.volRatio/8)*100)}%`,height:"100%",background:s.volRatio>=5?"#22c55e":s.volRatio>=2?"#facc15":"#475569",borderRadius:99}})
+            )
+          ),
+          // Catalyst grade
+          React.createElement('div',null,
+            React.createElement('div',{style:{fontSize:10,fontWeight:700,color:s.catalystGrade==="A"?"#22c55e":s.catalystGrade==="B"?"#facc15":s.catalystGrade==="C"?"#f97316":"#475569"}}),
+            `Cat: ${s.catalystGrade}`&&React.createElement('div',{style:{fontSize:10,fontWeight:700,color:s.catalystGrade==="A"?"#22c55e":s.catalystGrade==="B"?"#facc15":"#f97316"}},`Cat: ${s.catalystGrade}`),
+            React.createElement('div',{style:{fontSize:8,color:"#334155"}},`${s.freshNewsCount} fresh`)
+          ),
+          // Sector
+          React.createElement('div',null,
+            s.hotSector
+              ? React.createElement('div',{style:{fontSize:9,background:"#facc1518",border:"1px solid #facc1435",borderRadius:6,padding:"2px 7px",color:"#facc15",display:"inline-block"}},s.hotSector)
+              : React.createElement('div',{style:{fontSize:9,color:"#334155"}},"—")
+          ),
+          // News
+          React.createElement('div',{style:{paddingRight:10}},
+            React.createElement('div',{style:{fontSize:10,color:s.hotSector?"#fde68a":"#475569",lineHeight:1.4,display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical",overflow:"hidden"}},
+              s.topNews||React.createElement('span',{style:{color:"#334155",fontStyle:"italic"}},"no news")
+            )
+          ),
+          // Checklist — Ross's 5 criteria
+          React.createElement('div',{style:{display:"flex",flexDirection:"column",gap:2}},
+            React.createElement(Check,{ok:s.checks?.volRoss,warn:s.checks?.volGood&&!s.checks?.volRoss,label:`VOL ${s.volRatio?.toFixed(1)}x${s.checks?.volRoss?" ✓":""}` }),
+            React.createElement(Check,{ok:s.checks?.upTen,warn:s.checks?.upFive&&!s.checks?.upTen,label:`+${s.change?.toFixed(0)}% ${s.checks?.upTen?"✓":"need 10%"}`}),
+            React.createElement(Check,{ok:s.checks?.hasCatalyst,warn:s.checks?.hasNews&&!s.checks?.hasCatalyst,label:`NEWS ${s.catalystGrade}`}),
+            React.createElement(Check,{ok:s.checks?.floatRoss,warn:s.checks?.floatOk&&!s.checks?.floatRoss,label:s.float?`${s.float}M float`:"FLOAT ?"}),
+            React.createElement(Check,{ok:s.checks?.priceRoss,warn:s.checks?.priceOk&&!s.checks?.priceRoss,label:`$${s.price?.toFixed(0)} ${s.checks?.priceRoss?"✓":"$1-20?"}`})
+          ),
+          // Score
+          React.createElement('div',{style:{display:"flex",justifyContent:"center"}},React.createElement(ScoreRing,{score:s.score}))
+        ))
+      ),
+      // Grade guide
+      React.createElement('div',{style:{background:"#0b1120",border:"1px solid #1e293b",borderRadius:14,padding:"18px 20px"}},
+        React.createElement('div',{style:{fontSize:10,color:"#475569",letterSpacing:2,marginBottom:14}},"ROSS CAMERON'S 5-POINT SYSTEM — WARRIOR TRADING ($10M VERIFIED)"),
+        React.createElement('div',{style:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))",gap:10}},
+          [
+            ["A+","#22c55e","ROSS'S A+ TRADE","All 5 criteria: Vol 5x+ · Up 10%+ · News catalyst · Float <50M · Price $1-20. Top 2-3 gainer. Enter at proof candle 9:30-9:45am. 2:1 R:R minimum."],
+            ["A","#86efac","STRONG SETUP","4 of 5 criteria met. Missing one of Ross's requirements. Trade with confirmation — wait for opening range breakout before entry."],
+            ["B","#facc15","WAIT FOR PROOF","3 of 5 criteria met. High reversal risk. Only enter on very clean proof candle. Cut size by 50%. Watch first."],
+            ["C","#f97316","PAPER TRADE ONLY","Below Ross's minimum standard. More likely to fade. Do not risk real money. Study the chart."],
+            ["D","#ef4444","DO NOT TRADE","Fails to meet criteria. No statistical edge. Sitting on hands is a valid trade decision."],
+          ].map(([grade,col,title,desc])=>React.createElement('div',{key:grade,style:{background:"#060d1a",border:`1px solid ${col}25`,borderRadius:12,padding:"12px 14px",borderLeft:`3px solid ${col}`}},
+            React.createElement('div',{style:{display:"flex",alignItems:"center",gap:8,marginBottom:6}},
+              React.createElement(GradeBadge,{grade,gradeColor:col,size:12}),
+              React.createElement('span',{style:{fontSize:11,fontWeight:700,color:col}}),title&&React.createElement('span',{style:{fontSize:11,fontWeight:700,color:"#e2e8f0"}},title)
+            ),
+            React.createElement('div',{style:{fontSize:10,color:"#475569",lineHeight:1.55}},desc)
+          ))
+        )
+      ),
+      React.createElement('div',{style:{textAlign:"center",fontSize:8,color:"#1e293b",letterSpacing:2,paddingBottom:12}},"FOR EDUCATIONAL PURPOSES ONLY · NOT FINANCIAL ADVICE · PAPER TRADE FIRST · ALL SETUPS REQUIRE YOUR OWN CONFIRMATION")
+    ),
+    selected&&React.createElement(AIModal,{stock:selected,onClose:()=>setSelected(null)})
+  );
+}
+ReactDOM.render(React.createElement(App), document.getElementById('root'));
+</script>
+</body>
+</html>
